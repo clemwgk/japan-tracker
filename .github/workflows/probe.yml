@@ -1,0 +1,51 @@
+name: P2 probe (delete after verification)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+    steps:
+      - name: Check secret lengths (never print values)
+        run: |
+          echo "TELEGRAM_BOT_TOKEN len: ${#TELEGRAM_BOT_TOKEN}"
+          echo "AIRTABLE_PAT len: ${#AIRTABLE_PAT}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Probe Telegram getMe
+        run: |
+          python - <<'EOF'
+          import os, requests, sys
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=15)
+          data = r.json()
+          assert data.get("ok") is True, f"getMe failed: {r.status_code} {data}"
+          print(f"Telegram getMe ok=True, bot username={data['result']['username']}")
+          EOF
+
+      - name: Probe Airtable base schema
+        run: |
+          python - <<'EOF'
+          import os, requests, sys
+          pat = os.environ["AIRTABLE_PAT"]
+          headers = {"Authorization": f"Bearer {pat}"}
+          r = requests.get("https://api.airtable.com/v0/meta/bases/appORHKmWGR5RhyoK/tables",
+                           headers=headers, timeout=15)
+          assert r.status_code == 200, f"Airtable probe failed: {r.status_code} {r.text[:200]}"
+          tables = r.json().get("tables", [])
+          print(f"Airtable OK: {len(tables)} tables found")
+          EOF
