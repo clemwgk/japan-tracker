@@ -1,0 +1,40 @@
+name: Japan Tracker — Logger
+
+on:
+  schedule:
+    - cron: "17 */4 * * *"   # off-minute to avoid top-of-hour scheduler congestion (M7)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read              # minimal footprint (H6)
+
+concurrency:
+  group: japan-tracker-logger
+  cancel-in-progress: false   # let an in-flight run finish; don't interrupt mid-write (H1/D11)
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    # SCHEDULE-INERT-UNTIL-CUTOVER (SP-C1/D15):
+    # Scheduled fires are blocked until a human sets LOGGER_ENABLED=true at cutover.
+    # workflow_dispatch is ungated so the controlled cutover test (Phase 6 step 6) still works.
+    if: github.event_name == 'workflow_dispatch' || vars.LOGGER_ENABLED == 'true'
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run logger
+        run: python logger.py
