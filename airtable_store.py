@@ -27,7 +27,10 @@ class AirtableStore:
 
     def _get(self, table_id, params=None):
         url = f"{self.BASE_URL}/{config.BASE_ID}/{table_id}"
-        r = requests.get(url, headers=self._headers, params=params, timeout=30)
+        merged = {"returnFieldsByFieldId": "true"}
+        if params:
+            merged.update(params)
+        r = requests.get(url, headers=self._headers, params=merged, timeout=30)
         r.raise_for_status()
         return r.json()
 
