@@ -42,12 +42,35 @@ def _send_alert(token, channel_id, text):
         pass
 
 
+# Alert delivery channel, resolved lazily + cached per run (reset in main()).
+_alert_channel = None
+
+
+def _resolve_alert_channel(store):
+    """Return the Telegram channel for alert delivery.
+
+    Honors the Airtable Config key `telegram_channel_id` when set (matching the
+    processor, research_prompt.md §Step 4), falling back to the checked-in
+    constant. Resolved lazily and cached so a quiet run makes no extra Config
+    GET — only paths that actually send an alert pay for the lookup. Never
+    raises: any lookup failure falls back to the constant.
+    """
+    global _alert_channel
+    if _alert_channel is None:
+        try:
+            _alert_channel = (store.get_config("telegram_channel_id")
+                              or config.TELEGRAM_CHANNEL_ID)
+        except Exception:
+            _alert_channel = config.TELEGRAM_CHANNEL_ID
+    return _alert_channel
+
+
 def _log(step, **kv):
     parts = " ".join(f"{k}={v}" for k, v in kv.items())
     print(f"[{RUN_ID}] step={step} {parts}", flush=True)
 
 
-def _check_processor_stalled(store, token, channel_id):
+def _check_processor_stalled(store, token):
     """Alert if the processor looks stalled (Config or oldest Inbox pending)."""
     tz = datetime.timezone(datetime.timedelta(hours=8))
     now = datetime.datetime.now(tz)
@@ -58,7 +81,7 @@ def _check_processor_stalled(store, token, channel_id):
             last_proc = datetime.datetime.fromisoformat(last_proc_str)
             age = (now - last_proc).total_seconds()
             if age > config.PROCESSOR_STALE_SECONDS:
-                _send_alert(token, channel_id,
+                _send_alert(token, _resolve_alert_channel(store),
                     f"[logger] PROCESSOR STALLED\n"
                     f"last_successful_run={last_proc_str} ({age/3600:.1f}h ago)\n"
                     f"Component=processor Severity=WARN run_id={RUN_ID}\n"
@@ -75,7 +98,7 @@ def _check_processor_stalled(store, token, channel_id):
                 cap_dt = datetime.datetime.fromisoformat(captured)
                 age = (now - cap_dt).total_seconds()
                 if age > config.INBOX_PENDING_STALE_SECONDS:
-                    _send_alert(token, channel_id,
+                    _send_alert(token, _resolve_alert_channel(store),
                         f"[logger] PROCESSOR STALLED (pending backlog)\n"
                         f"Oldest pending Inbox row: {captured} ({age/3600:.1f}h ago)\n"
                         f"Component=processor Severity=WARN run_id={RUN_ID}\n"
@@ -85,6 +108,9 @@ def _check_processor_stalled(store, token, channel_id):
 
 
 def main():
+    global _alert_channel
+    _alert_channel = None  # reset per-run lazy cache
+
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     pat   = os.environ["AIRTABLE_PAT"]
     store = airtable_store.AirtableStore(pat)
@@ -109,7 +135,6 @@ def main():
 
         last_offset      = int(raw_offset)
         requested_offset = last_offset + 1
-        channel_id       = config.TELEGRAM_CHANNEL_ID
         _log(step, last_offset=last_offset, requested_offset=requested_offset)
 
         # ----------------------------------------------------------------
@@ -117,7 +142,9 @@ def main():
         # ----------------------------------------------------------------
         step = "fetch"
         _log(step)
-        result = telegram_client.fetch(token, channel_id, requested_offset)
+        # channel_id is accepted for signature stability but unused by fetch
+        # (getUpdates is bot-wide); pass the constant to avoid an eager Config GET.
+        result = telegram_client.fetch(token, config.TELEGRAM_CHANNEL_ID, requested_offset)
 
         if result["error"]:
             err_msg = result.get("message", "unknown")
@@ -134,7 +161,7 @@ def main():
             )
             store.set_config("last_logger_run",    _now_sgt())
             store.set_config("last_logger_status", f"error: fetch {http_st}")
-            _send_alert(token, channel_id,
+            _send_alert(token, _resolve_alert_channel(store),
                 f"[logger] ERROR\nfetch failed: {err_msg[:200]}\n"
                 f"Component=logger Severity=ERROR run_id={RUN_ID}\n"
                 f"Next: check Actions run log at {RUN_ID}")
@@ -223,7 +250,7 @@ def main():
         sgt = datetime.timezone(datetime.timedelta(hours=8))
         sgt_hour = datetime.datetime.now(sgt).hour
         if 0 <= sgt_hour <= 7:
-            _check_processor_stalled(store, token, channel_id)
+            _check_processor_stalled(store, token)
         else:
             _log(step, skipped="throttled")
 
@@ -231,7 +258,7 @@ def main():
         # Step 8 — alert policy: only on error / gap (silent on quiet run)
         # ----------------------------------------------------------------
         if possible_gap:
-            _send_alert(token, channel_id,
+            _send_alert(token, _resolve_alert_channel(store),
                 f"[logger] POSSIBLE UPDATE GAP\n"
                 f"Requested offset={requested_offset}, lowest seen={lowest}. "
                 f"Likely benign (filtered update types) — review if recurring.\n"
