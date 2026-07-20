@@ -2,7 +2,7 @@ name: Japan Tracker — Logger
 
 on:
   schedule:
-    - cron: "17 */4 * * *"   # off-minute to avoid top-of-hour scheduler congestion (M7)
+    - cron: "17 */8 * * *"   # off-minute to avoid top-of-hour scheduler congestion (M7)
   workflow_dispatch: {}
 
 permissions:

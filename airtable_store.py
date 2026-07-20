@@ -46,6 +46,13 @@ class AirtableStore:
         r.raise_for_status()
         return r.json()
 
+    def _patch_table(self, table_id, body):
+        """Batch PATCH against the table URL (no record id) — for {"records": [...]}."""
+        url = f"{self.BASE_URL}/{config.BASE_ID}/{table_id}"
+        r = requests.patch(url, headers=self._headers, json=body, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
     # ------------------------------------------------------------------
     # Config
     # ------------------------------------------------------------------
@@ -75,6 +82,35 @@ class AirtableStore:
             rec_id = records[0]["id"]
 
         self._patch(config.TBL_CONFIG, rec_id, {"fields": {config.FLD_CONFIG_VALUE: value}})
+
+    def set_config_many(self, updates):
+        """Set several Config rows in a SINGLE batch PATCH.
+
+        `updates` is a dict of {config_key: value_string}. Record IDs come from
+        the cached config.CONFIG_RECORD_IDS map; any key not cached falls back
+        to a per-missing-key GET (same lookup as set_config). In practice all
+        keys are cached, so the common path issues zero extra GETs and one PATCH.
+        """
+        if not updates:
+            return
+
+        records = []
+        for key, value in updates.items():
+            rec_id = config.CONFIG_RECORD_IDS.get(key)
+            if not rec_id:
+                data = self._get(
+                    config.TBL_CONFIG,
+                    params={"filterByFormula": f"{{key}}='{key}'", "maxRecords": 1},
+                )
+                found = data.get("records", [])
+                if not found:
+                    raise ValueError(f"Config key not found: {key!r}")
+                rec_id = found[0]["id"]
+            records.append({"id": rec_id, "fields": {config.FLD_CONFIG_VALUE: value}})
+
+        # Airtable caps batch writes at 10 records; we always have far fewer.
+        assert len(records) <= 10, f"batch too large: {len(records)} records"
+        self._patch_table(config.TBL_CONFIG, {"records": records})
 
     # ------------------------------------------------------------------
     # Inbox
