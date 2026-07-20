@@ -1,5 +1,5 @@
 """
-Japan Tracker v2 — Logger entrypoint (GitHub Actions, every 4h).
+Japan Tracker v2 — Logger entrypoint (GitHub Actions, every 8h).
 Pure Python, no LLM. Single responsibility: drain Telegram into the Inbox.
 """
 
@@ -109,7 +109,7 @@ def main():
 
         last_offset      = int(raw_offset)
         requested_offset = last_offset + 1
-        channel_id       = store.get_config("telegram_channel_id") or config.TELEGRAM_CHANNEL_ID
+        channel_id       = config.TELEGRAM_CHANNEL_ID
         _log(step, last_offset=last_offset, requested_offset=requested_offset)
 
         # ----------------------------------------------------------------
@@ -187,8 +187,9 @@ def main():
         # Step 5 — advance offset (SP-H2: do NOT write on zero-update run)
         # ----------------------------------------------------------------
         step = "commit_offset"
+        config_updates = {}
         if raw_update_count > 0 and highest is not None:
-            store.set_config("telegram_last_logged_update_id", str(highest))
+            config_updates["telegram_last_logged_update_id"] = str(highest)
             committed = highest
             _log(step, committed=committed)
         else:
@@ -207,15 +208,24 @@ def main():
             getupdates_http_status=str(result.get("http_status", 200)),
             possible_gap_detected=possible_gap, errors=0,
         )
-        store.set_config("last_logger_run",    _now_sgt())
-        store.set_config("last_logger_status", "ok")
+        # Single batch PATCH for all end-of-run Config writes (offset + heartbeat).
+        config_updates["last_logger_run"]    = _now_sgt()
+        config_updates["last_logger_status"] = "ok"
+        store.set_config_many(config_updates)
         _log(step, done=True)
 
         # ----------------------------------------------------------------
         # Step 7 — cross-watchdog (processor stalled?)
         # ----------------------------------------------------------------
+        # Throttle: the processor thresholds are 36–48h, so a 2-GET stall check
+        # every run is wasteful. Only run it on the overnight SGT run (hour 0–7).
         step = "watchdog"
-        _check_processor_stalled(store, token, channel_id)
+        sgt = datetime.timezone(datetime.timedelta(hours=8))
+        sgt_hour = datetime.datetime.now(sgt).hour
+        if 0 <= sgt_hour <= 7:
+            _check_processor_stalled(store, token, channel_id)
+        else:
+            _log(step, skipped="throttled")
 
         # ----------------------------------------------------------------
         # Step 8 — alert policy: only on error / gap (silent on quiet run)
